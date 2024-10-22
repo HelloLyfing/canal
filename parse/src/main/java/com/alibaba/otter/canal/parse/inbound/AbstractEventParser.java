@@ -113,6 +113,14 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
         return true;
     }
 
+    protected void prepareLogMDC() {
+        MDC.put("destination", destination);
+    }
+
+    protected void cleanLogMDC() {
+        MDC.remove("destination");
+    }
+
     protected void afterDump(ErosaConnection connection) {
     }
 
@@ -122,7 +130,7 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
         }
     }
 
-    public AbstractEventParser(){
+    public AbstractEventParser() {
         // 初始化一下
         transactionBuffer = new EventTransactionBuffer(transaction -> {
             boolean successed = consumeTheEventAndProfilingIfNecessary(transaction);
@@ -143,7 +151,8 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
 
     public void start() {
         super.start();
-        MDC.put("destination", destination);
+        prepareLogMDC();
+
         // 配置transaction buffer
         // 初始化缓冲队列
         transactionBuffer.setBufferSize(transactionSize);// 设置buffer大小
@@ -153,9 +162,8 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
         binlogParser.start();
         // 启动工作线程
         parseThread = new Thread(new Runnable() {
-
             public void run() {
-                MDC.put("destination", String.valueOf(destination));
+                prepareLogMDC();
                 ErosaConnection erosaConnection = null;
                 boolean isMariaDB = false;
                 while (running) {
@@ -251,7 +259,7 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
                             } else {
                                 multiStageCoprocessor.start();
                                 if (StringUtils.isEmpty(startPosition.getJournalName())
-                                    && startPosition.getTimestamp() != null) {
+                                        && startPosition.getTimestamp() != null) {
                                     erosaConnection.dump(startPosition.getTimestamp(), multiStageCoprocessor);
                                 } else {
                                     erosaConnection.dump(startPosition.getJournalName(),
@@ -265,7 +273,7 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
                                 erosaConnection.dump(parseGtidSet(startPosition.getGtid(), isMariaDB), sinkHandler);
                             } else {
                                 if (StringUtils.isEmpty(startPosition.getJournalName())
-                                    && startPosition.getTimestamp() != null) {
+                                        && startPosition.getTimestamp() != null) {
                                     erosaConnection.dump(startPosition.getTimestamp(), sinkHandler);
                                 } else {
                                     erosaConnection.dump(startPosition.getJournalName(),
@@ -294,6 +302,8 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
                                 runningInfo.getAddress().toString()), e);
                             sendAlarm(destination, ExceptionUtils.getFullStackTrace(e));
                         }
+
+                        logger.info("parserExceptionHandler begin, {}", parserExceptionHandler);
                         if (parserExceptionHandler != null) {
                             parserExceptionHandler.handle(e);
                         }
@@ -317,7 +327,7 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
                                     e1);
                             }
                         }
-                    }
+                    } // end try
                     // 出异常了，退出sink消费，释放一下状态
                     eventSink.interrupt();
                     transactionBuffer.reset();// 重置一下缓冲队列，重新记录数据
@@ -338,8 +348,8 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
                         } catch (InterruptedException e) {
                         }
                     }
-                }
-                MDC.remove("destination");
+                } // end while
+                cleanLogMDC();
             }
         });
 
@@ -669,6 +679,7 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
     }
 
     public void setParserExceptionHandler(ParserExceptionHandler parserExceptionHandler) {
+        logger.info("set setParserExceptionHandler");
         this.parserExceptionHandler = parserExceptionHandler;
     }
 

@@ -9,6 +9,8 @@ import com.alibaba.otter.canal.parse.exception.PositionNotFoundException;
 import com.alibaba.otter.canal.parse.inbound.ParserExceptionHandler;
 import com.alibaba.otter.canal.parse.inbound.mysql.MysqlEventParser;
 
+import static com.alibaba.otter.canal.parse.support.ParseHelper.maskStr;
+
 /**
  * aliyun rds的binlog parser支持
  *
@@ -38,12 +40,15 @@ public class RdsBinlogEventParserProxy extends MysqlEventParser {
 
     @Override
     public void start() {
+        prepareLogMDC();
+
+        logger.info("before start, rdsLocalBinlogEventParser: {}, accesskey: {}", rdsLocalBinlogEventParser, maskStr(accesskey));
+
         if (rdsLocalBinlogEventParser == null && StringUtils.isNotEmpty(accesskey) && StringUtils.isNotEmpty(secretkey)
-            && StringUtils.isNotEmpty(instanceId)) {
+                && StringUtils.isNotEmpty(instanceId)) {
             rdsLocalBinlogEventParser = new RdsLocalBinlogEventParser();
             // rds oss mode
             setRdsOssMode(true);
-            final ParserExceptionHandler targetHandler = this.getParserExceptionHandler();
             if (directory == null) {
                 directory = System.getProperty("java.io.tmpdir", "/tmp") + "/" + destination;
             }
@@ -75,27 +80,45 @@ public class RdsBinlogEventParserProxy extends MysqlEventParser {
             rdsLocalBinlogEventParser.setParallelBufferSize(this.parallelBufferSize);
             rdsLocalBinlogEventParser.setParallelThreadSize(this.parallelThreadSize);
             rdsLocalBinlogEventParser.setFinishListener(() -> executorService.execute(() -> {
+                logger.info("rdsLocalBinlogEventParser work done!");
                 rdsLocalBinlogEventParser.stop();
                 // empty the dump error count,or will go into local binlog mode again,with error
                 // position,never get out,fixed by bucketli
                 RdsBinlogEventParserProxy.this.setDumpErrorCount(0);
                 RdsBinlogEventParserProxy.this.start();
+                logger.info("switch to normal binlog consume mode success!");
             }));
+
+            final ParserExceptionHandler targetHandler = this.getParserExceptionHandler();
             this.setParserExceptionHandler(e -> {
                 handleMysqlParserException(e);
                 if (targetHandler != null) {
+                    logger.info("targetHandler begin: {}", targetHandler.getClass().getName());
                     targetHandler.handle(e);
                 }
             });
         }
 
+        logger.info("after start, rdsLocalBinlogEventParser: {}, accesskey: {}", rdsLocalBinlogEventParser, maskStr(accesskey));
+
         super.start();
     }
 
     private void handleMysqlParserException(Throwable throwable) {
+        logger.info("begin handle MysqlParserException, " + throwable.getMessage());
+
+        boolean needRdsBinLogHandle = false;
         if (throwable instanceof PositionNotFoundException) {
-            logger.info("remove rds not found position, try download rds binlog!");
-            executorService.execute(() -> {
+            needRdsBinLogHandle = true;
+        }
+        if (isLogFileNameNotFoundError(throwable)) {
+            needRdsBinLogHandle = true;
+        }
+
+        if (needRdsBinLogHandle) {
+            // 为什么要异步执行，因为rdsBinlogEventParserProxy关闭时会中断当前执行线程，在当前执行线程继续执行以下代码是不安全的
+            executorService.submit(wrapRunnable(() -> {
+                logger.info("remove rds not found position, try download rds binlog!");
                 try {
                     logger.info("stop mysql parser!");
                     RdsBinlogEventParserProxy rdsBinlogEventParserProxy = RdsBinlogEventParserProxy.this;
@@ -115,8 +138,29 @@ public class RdsBinlogEventParserProxy extends MysqlEventParser {
                     RdsBinlogEventParserProxy rdsBinlogEventParserProxy = RdsBinlogEventParserProxy.this;
                     rdsBinlogEventParserProxy.start();// 继续重试
                 }
-            });
+            }));
         }
+    }
+
+    private Runnable wrapRunnable(Runnable runnable) {
+        return () -> {
+            prepareLogMDC();
+            try {
+                runnable.run();
+            } finally {
+                cleanLogMDC();
+            }
+        };
+    }
+
+    private boolean isLogFileNameNotFoundError(Throwable t) {
+        // aliyun rds exception
+        if (t.getMessage() != null
+                && t.getMessage().contains("Could not find first log file name in binary log index file")) {
+            return true;
+        }
+
+        return false;
     }
 
     @Override

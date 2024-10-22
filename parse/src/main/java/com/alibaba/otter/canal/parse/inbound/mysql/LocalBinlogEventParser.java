@@ -1,6 +1,7 @@
 package com.alibaba.otter.canal.parse.inbound.mysql;
 
 import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.lang.StringUtils;
 
@@ -30,10 +31,11 @@ public class LocalBinlogEventParser extends AbstractMysqlEventParser implements 
     protected TableMetaCache     tableMetaCache;        // 对应meta
 
     protected String             directory;
-    protected boolean            needWait   = false;
-    protected int                bufferSize = 16 * 1024;
+    protected boolean            needWait         = false; // see maxWaitMills
+    protected long               maxWaitMills     = TimeUnit.MINUTES.toMillis(20); // 下载文件时，最大等待时长
+    protected int                bufferSize       = 16 * 1024;
 
-    public LocalBinlogEventParser(){
+    public LocalBinlogEventParser() {
         // this.runningInfo = new AuthenticationInfo();
     }
 
@@ -108,6 +110,7 @@ public class LocalBinlogEventParser extends AbstractMysqlEventParser implements 
         connection.setBufferSize(this.bufferSize);
         connection.setDirectory(this.directory);
         connection.setNeedWait(this.needWait);
+        connection.setMaxWaitMills(this.maxWaitMills);
 
         return connection;
     }
@@ -187,4 +190,9 @@ public class LocalBinlogEventParser extends AbstractMysqlEventParser implements 
     public void setNeedWait(boolean needWait) {
         this.needWait = needWait;
     }
+
+    public long getMaxWaitMills() {
+        return this.maxWaitMills;
+    }
+
 }

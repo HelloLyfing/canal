@@ -5,6 +5,8 @@ import java.io.IOException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import org.apache.commons.lang.NotImplementedException;
 import org.apache.commons.lang.StringUtils;
@@ -35,6 +37,7 @@ public class LocalBinLogConnection implements ErosaConnection {
     private static final Logger logger     = LoggerFactory.getLogger(LocalBinLogConnection.class);
     private BinLogFileQueue     binlogs    = null;
     private boolean             needWait;
+    private long                maxWaitMills;
     private String              directory;
     private int                 bufferSize = 16 * 1024;
     private boolean             running    = false;
@@ -45,8 +48,6 @@ public class LocalBinLogConnection implements ErosaConnection {
 
     /** rdsOosMode 主从信息 */
     private final Set<Long> rdsOssMasterSlaveInfo = new HashSet<>(4);
-
-    private boolean firstUpdateRdsOssMasterSlave = true;
 
     private FileParserListener  parserListener;
 
@@ -61,7 +62,7 @@ public class LocalBinLogConnection implements ErosaConnection {
         isRdsOssMode = rdsOssMode;
     }
 
-    public LocalBinLogConnection(String directory, boolean needWait){
+    public LocalBinLogConnection(String directory, boolean needWait) {
         this.needWait = needWait;
         this.directory = directory;
     }
@@ -69,7 +70,7 @@ public class LocalBinLogConnection implements ErosaConnection {
     @Override
     public void connect() throws IOException {
         if (this.binlogs == null) {
-            this.binlogs = new BinLogFileQueue(this.directory);
+            this.binlogs = new BinLogFileQueue(this.directory, (needWait && maxWaitMills > 0) ? maxWaitMills : 0);
         }
         this.running = true;
     }
@@ -104,6 +105,7 @@ public class LocalBinLogConnection implements ErosaConnection {
             LogDecoder decoder = new LogDecoder(LogEvent.UNKNOWN_EVENT, LogEvent.ENUM_END_EVENT);
             LogContext context = new LogContext();
             fetcher.open(current, binlogPosition);
+            logger.info("begin to parse binlog file: {}", current);
             context.setLogPosition(new LogPosition(binlogfilename, binlogPosition));
             while (running) {
                 boolean needContinue = true;
@@ -132,8 +134,12 @@ public class LocalBinLogConnection implements ErosaConnection {
                 }
 
                 fetcher.close(); // 关闭上一个文件
-                parserFinish(current.getName());
-                if (needContinue) {// 读取下一个
+
+                if (!parserFinish(current.getName())) {
+                    needContinue = false;
+                }
+
+                if (needContinue) { // 读取下一个
                     File nextFile;
                     if (needWait) {
                         nextFile = binlogs.waitForNextFile(current);
@@ -148,12 +154,16 @@ public class LocalBinLogConnection implements ErosaConnection {
                     current = nextFile;
                     fetcher.open(current);
                     context.setLogPosition(new LogPosition(nextFile.getName()));
+                    logger.info("ready to parse next binlog file: {}", current);
                 } else {
                     break;// 跳出
                 }
-            }
+            } // end while
         } catch (InterruptedException e) {
             logger.warn("LocalBinLogConnection dump interrupted");
+        } catch (TimeoutException e) {
+            logger.warn("LocalBinLogConnection dump timeout", e);
+            throw new RuntimeException(e);
         }
     }
 
@@ -167,13 +177,16 @@ public class LocalBinLogConnection implements ErosaConnection {
     private void checkServerId(LogEvent event) {
         if (serverId != 0 && event.getServerId() != serverId) {
             if (isRdsOssMode()) {
-                // 第一次添加主从信息
-                if (firstUpdateRdsOssMasterSlave) {
-                    firstUpdateRdsOssMasterSlave = false;
-                    rdsOssMasterSlaveInfo.add(event.getServerId());
-                } else if (!rdsOssMasterSlaveInfo.contains(event.getServerId())) {
-                    // 主从节点信息之外的节点信息
-                    throw new ServerIdNotMatchException("unexpected rds serverId " + serverId + " in binlog file !");
+                synchronized (rdsOssMasterSlaveInfo) {
+                    // 如果主从serverId只存了一个当时的主serverId，则只允许再添加一个serverId(曾经为从，当前已为主)
+                    if (1 == rdsOssMasterSlaveInfo.size()) {
+                        rdsOssMasterSlaveInfo.add(event.getServerId());
+                    }
+
+                    if (!rdsOssMasterSlaveInfo.contains(event.getServerId())) {
+                        // 主从节点信息之外的节点信息
+                        throw new ServerIdNotMatchException("unexpected rds serverId " + serverId + " in binlog file !");
+                    }
                 }
             } else {
                 throw new ServerIdNotMatchException("unexpected serverId " + serverId + " in binlog file !");
@@ -274,6 +287,7 @@ public class LocalBinLogConnection implements ErosaConnection {
             LogContext context = new LogContext();
             fetcher.open(current, binlogPosition);
             context.setLogPosition(new LogPosition(binlogfilename, binlogPosition));
+            logger.info("begin to parse binlog file: {}", current);
             while (running) {
                 boolean needContinue = true;
                 LogEvent event = null;
@@ -291,8 +305,12 @@ public class LocalBinLogConnection implements ErosaConnection {
                 }
 
                 fetcher.close(); // 关闭上一个文件
-                parserFinish(binlogfilename);
-                if (needContinue) {// 读取下一个
+
+                if (!parserFinish(binlogfilename)) {
+                    needContinue = false;
+                }
+
+                if (needContinue) { // 读取下一个
                     File nextFile;
                     if (needWait) {
                         nextFile = binlogs.waitForNextFile(current);
@@ -307,19 +325,25 @@ public class LocalBinLogConnection implements ErosaConnection {
                     current = nextFile;
                     fetcher.open(current);
                     binlogfilename = nextFile.getName();
+                    logger.info("ready to parse next binlog file: {}", current);
                 } else {
-                    break;// 跳出
+                    break; // 跳出
                 }
-            }
+            } // end while
         } catch (InterruptedException e) {
             logger.warn("LocalBinLogConnection dump interrupted");
+        } catch (TimeoutException e) {
+            logger.warn("LocalBinLogConnection dump timeout", e);
+            throw new RuntimeException(e);
         }
     }
 
-    private void parserFinish(String fileName) {
+    private boolean parserFinish(String fileName) {
+        boolean shouldContinue = true;
         if (parserListener != null) {
-            parserListener.onFinish(fileName);
+            shouldContinue &= parserListener.onFinish(fileName);
         }
+        return shouldContinue;
     }
 
     @Override
@@ -410,6 +434,8 @@ public class LocalBinLogConnection implements ErosaConnection {
         connection.setBufferSize(this.bufferSize);
         connection.setDirectory(this.directory);
         connection.setNeedWait(this.needWait);
+        connection.setMaxWaitMills(this.maxWaitMills);
+
         return connection;
     }
 
@@ -424,6 +450,10 @@ public class LocalBinLogConnection implements ErosaConnection {
 
     public void setNeedWait(boolean needWait) {
         this.needWait = needWait;
+    }
+
+    public void setMaxWaitMills(long maxWaitMills) {
+        this.maxWaitMills = maxWaitMills;
     }
 
     public String getDirectory() {
@@ -456,8 +486,11 @@ public class LocalBinLogConnection implements ErosaConnection {
     }
 
     public interface FileParserListener {
+        /**
+         * @return boolean, true: should continue to parse next; false: should stop parse(local binlog is the last one)
+         */
+        boolean onFinish(String fileName);
 
-        void onFinish(String fileName);
     }
 
 }

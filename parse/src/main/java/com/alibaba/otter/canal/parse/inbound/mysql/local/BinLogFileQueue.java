@@ -6,6 +6,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
@@ -26,7 +27,8 @@ public class BinLogFileQueue {
 
     private String              baseName       = "mysql-bin.";
     private List<File>          binlogs        = new ArrayList<>();
-    private Pattern binLogPattern = Pattern.compile(baseName + "\\d+$");
+    private Pattern             binLogPattern  = Pattern.compile(baseName + "\\d+$");
+    private long                maxWaitMills   = 0;
     private File                directory;
     private ReentrantLock       lock           = new ReentrantLock();
     private Condition           nextCondition  = lock.newCondition();
@@ -34,8 +36,9 @@ public class BinLogFileQueue {
     private long                reloadInterval = 10 * 1000L;           // 10秒
     private CanalParseException exception      = null;
 
-    public BinLogFileQueue(String directory){
+    public BinLogFileQueue(String directory, long waitFileMaxMills) {
         this(new File(directory));
+        maxWaitMills = waitFileMaxMills;
     }
 
     public BinLogFileQueue(File directory){
@@ -147,7 +150,16 @@ public class BinLogFileQueue {
      * @return
      * @throws InterruptedException
      */
-    public File waitForNextFile(File pre) throws InterruptedException {
+    public File waitForNextFile(File pre) throws InterruptedException, TimeoutException {
+        return waitForNextFile0(pre, System.currentTimeMillis());
+    }
+
+    private File waitForNextFile0(File pre, long beginTsMills) throws InterruptedException, TimeoutException {
+        if (maxWaitMills > 0 && (System.currentTimeMillis() - beginTsMills) > maxWaitMills) {
+            // timeout
+            throw new TimeoutException(String.format("waitNextFile(%s) timeout, beginTs:%s", pre, beginTsMills));
+        }
+
         try {
             lock.lockInterruptibly();
             if (binlogs.size() == 0) {
@@ -165,7 +177,7 @@ public class BinLogFileQueue {
                     return binlogs.get(index + 1);
                 } else {
                     nextCondition.await();// 等待新文件
-                    return waitForNextFile(pre);// 唤醒之后递归调用一下
+                    return waitForNextFile0(pre, beginTsMills);// 唤醒之后递归调用一下
                 }
             }
         } finally {
