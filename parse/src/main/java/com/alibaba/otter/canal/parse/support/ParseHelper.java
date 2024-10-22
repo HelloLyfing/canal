@@ -24,7 +24,7 @@ public final class ParseHelper {
 
     public static void formatBinlogFiles(List<BinlogFile> binlogFiles) {
         for (BinlogFile binlog : binlogFiles) {
-            // example: mysql-bin.002867
+            // binlog文件名称规范统一化，使用阿里云OSS、以及消费位点中储存的文件名的格式即可, example: mysql-bin.002867
             String fileName = parseBinLogName(binlog.getDownloadLink());
             binlog.setFileName(fileName);
         }
