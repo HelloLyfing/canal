@@ -194,6 +194,7 @@ public class BinlogDownloadQueue {
         running = false;
         binlogList.clear();
         downloadQueue.clear();
+        immutableBinlogList = null;
         try {
             logger.info("downloadThread destroy begin");
             downloadThread.interrupt();

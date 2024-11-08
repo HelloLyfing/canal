@@ -135,7 +135,7 @@ public class LocalBinLogConnection implements ErosaConnection {
 
                 fetcher.close(); // 关闭上一个文件
 
-                if (!parserFinish(current.getName())) {
+                if (!parserFinishAndNext(current.getName())) {
                     needContinue = false;
                 }
 
@@ -306,7 +306,7 @@ public class LocalBinLogConnection implements ErosaConnection {
 
                 fetcher.close(); // 关闭上一个文件
 
-                if (!parserFinish(binlogfilename)) {
+                if (!parserFinishAndNext(binlogfilename)) {
                     needContinue = false;
                 }
 
@@ -338,7 +338,7 @@ public class LocalBinLogConnection implements ErosaConnection {
         }
     }
 
-    private boolean parserFinish(String fileName) {
+    private boolean parserFinishAndNext(String fileName) {
         boolean shouldContinue = true;
         if (parserListener != null) {
             shouldContinue &= parserListener.onFinish(fileName);
