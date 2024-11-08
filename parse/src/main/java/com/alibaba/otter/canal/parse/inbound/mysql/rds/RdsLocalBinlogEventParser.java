@@ -63,7 +63,8 @@ public class RdsLocalBinlogEventParser extends LocalBinlogEventParser implements
             }
 
             /**
-             * 配置形式1）消费位点中，需要包含的信息项: journalName(必须), position(必须，如果不知道填4即可); timestamp(可选), serverId(可选)
+             * 配置形式1）消费位点中，需要包含的信息项: journalName(必须); position(必须，如果不知道填4即可);
+             *   timestamp(可选，如果tsdb.enable为true则为必选); serverId(可选);
              * 由于阿里云的oss同时存储了主备多份binlog信息，如果单纯依靠时间戳，无法具体判断要使用哪个serverId的binlog文件;
              * 而且, 如果没有journalName，仅有timestamp，则此处会直接报错: xx.mysql.MysqlConnection#dump(long, com.alibaba.otter.canal.parse.inbound.MultiStageCoprocessor)，所以需要包含以上二个必选信息
              *
